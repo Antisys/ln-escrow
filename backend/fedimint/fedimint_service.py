@@ -228,15 +228,10 @@ class FedimintEscrowService:
         """
         Resolve a disputed escrow via oracle attestations, then pay the winner via LN.
 
-        Two-step flow:
-          1. resolve_via_oracle() → e-cash lands in service wallet
-          2. ln_pay() → pays the winner's BOLT11 invoice from the wallet
-
-        Returns the LN payment result dict.
+        Single atomic call: resolve-oracle → pay via Lightning.
+        No standalone ln_pay endpoint exists — funds can only leave via escrow operations.
         """
-        await self._client.resolve_via_oracle(escrow_id, attestations)
-        logger.info("Fedimint escrow %s resolved via oracle, paying out via LN...", escrow_id)
-        result = await self._client.ln_pay(bolt11)
+        result = await self._client.resolve_oracle_and_pay(escrow_id, attestations, bolt11)
         logger.info("Fedimint escrow %s oracle resolution + LN payment complete", escrow_id)
         return result
 

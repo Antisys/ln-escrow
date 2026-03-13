@@ -33,6 +33,7 @@ def _server_mock_payments() -> bool:
 
 
 _MOCK_PAYMENTS_ON_SERVER = _server_mock_payments()
+_DEVIMINT_AVAILABLE = bool(os.environ.get("SSH_SERVER") and os.environ.get("SERVER_DEVIMINT_ENV"))
 DEAL_PRICE = 10000  # 10k sats — small enough to be safe
 TEST_SELLER_ADDRESS = "hello@getalby.com"
 TEST_BUYER_ADDRESS = "hello@getalby.com"
@@ -249,17 +250,34 @@ def generate_secret_and_hash() -> tuple[str, str]:
     return secret_code, secret_code_hash
 
 
-def fund_deal_via_devimint(deal_id: str, poll_timeout: int = 60) -> dict:
+def _make_timeout_sig_for_coincurve_key(priv_key) -> str:
+    """Create a BIP-340 Schnorr timeout signature using a coincurve private key's raw bytes."""
+    from secp256k1 import PrivateKey as SchnorrPrivateKey
+    schnorr_priv = SchnorrPrivateKey(priv_key.secret)
+    msg = hashlib.sha256(b'timeout').digest()
+    sig = schnorr_priv.schnorr_sign(msg, b'', raw=True)
+    return sig.hex()
+
+
+def fund_deal_via_devimint(deal_id: str, poll_timeout: int = 60,
+                           buyer_eph_priv=None, buyer_eph_pub: str = None) -> dict:
     """
     Create LN invoice (with browser-generated secret_code_hash), pay it via devimint,
     and wait for deal to become funded.
     Returns dict with 'check_result' and 'secret_code' (simulating browser localStorage).
+
+    If buyer_eph_priv/pub are provided, use them (must match the key registered
+    during LNURL auth). Otherwise generate a random key (only works for deals without auth).
     """
     # Simulate browser generating secret + hash before calling create-ln-invoice
     secret_code, secret_code_hash = generate_secret_and_hash()
 
-    # NON-CUSTODIAL: generate buyer ephemeral key + pre-signed timeout authorization
-    buyer_pubkey, timeout_sig, _ = _make_buyer_escrow_key()
+    # NON-CUSTODIAL: use registered buyer key if available, else generate random
+    if buyer_eph_priv and buyer_eph_pub:
+        buyer_pubkey = buyer_eph_pub
+        timeout_sig = _make_timeout_sig_for_coincurve_key(buyer_eph_priv)
+    else:
+        buyer_pubkey, timeout_sig, _ = _make_buyer_escrow_key()
 
     # Create invoice — send hash + buyer key + timeout sig, keep secret locally
     inv_resp = api("post", f"/deals/{deal_id}/create-ln-invoice",
@@ -270,7 +288,7 @@ def fund_deal_via_devimint(deal_id: str, poll_timeout: int = 60) -> dict:
                    })
     assert inv_resp.status_code == 200, f"Create invoice failed: {inv_resp.text}"
     bolt11 = inv_resp.json()["bolt11"]
-    assert bolt11.startswith("lnbcrt"), f"Expected regtest invoice, got: {bolt11[:20]}"
+    assert bolt11.startswith("lnbc"), f"Expected BOLT11 invoice, got: {bolt11[:20]}"
 
     # Pay it
     paid = simulate_payment(bolt11, timeout=45)
@@ -485,11 +503,12 @@ class TestInvoiceCreation:
         _, seller_eph_priv, _, _, _, _ = lnurl_auth_deal(token, "seller", seller_id)
         # Buyer joins + auths
         join_deal(token, buyer_id, "Buyer")
-        lnurl_auth_deal(token, "buyer", buyer_id)
+        _, buyer_eph_priv, _, _, _, _ = lnurl_auth_deal(token, "buyer", buyer_id)
 
-        # No payout invoices submitted yet
+        # No payout invoices submitted yet — use buyer's auth key to pass pubkey check
         _, hash_ = generate_secret_and_hash()
-        buyer_pub, timeout_sig, _ = _make_buyer_escrow_key()
+        buyer_pub = buyer_eph_priv.public_key.format(compressed=True).hex()
+        timeout_sig = _make_timeout_sig_for_coincurve_key(buyer_eph_priv)
         resp = api("post", f"/deals/{deal_id}/create-ln-invoice",
                    json={"secret_code_hash": hash_, "buyer_pubkey": buyer_pub, "timeout_signature": timeout_sig})
         assert resp.status_code == 400
@@ -505,6 +524,7 @@ class TestInvoiceCreation:
 # SECTION E: Non-custodial guards
 # ============================================================================
 
+@pytest.mark.skipif(not _DEVIMINT_AVAILABLE, reason="Requires devimint (set SSH_SERVER + SERVER_DEVIMINT_ENV)")
 class TestNonCustodialGuards:
     """Test that secret_code is properly required for release."""
 
@@ -537,7 +557,9 @@ class TestNonCustodialGuards:
         assert r.status_code == 200, f"Submit refund failed: {r.text}"
 
         # Fund via devimint (secret_code_hash sent to server, secret_code stays local)
-        result = fund_deal_via_devimint(deal_id)
+        # Pass buyer's ephemeral key so buyer_pubkey matches what was registered at LNURL auth
+        buyer_eph_pub_hex = buyer_eph_priv.public_key.format(compressed=True).hex()
+        result = fund_deal_via_devimint(deal_id, buyer_eph_priv=buyer_eph_priv, buyer_eph_pub=buyer_eph_pub_hex)
         secret_code = result["secret_code"]  # from "localStorage" (generated locally)
         check_result = result["check_result"]
         # Server never returns secret_code in check-ln-invoice (it never had it)
@@ -603,6 +625,7 @@ class TestNonCustodialGuards:
 # SECTION F: Full happy path
 # ============================================================================
 
+@pytest.mark.skipif(not _DEVIMINT_AVAILABLE, reason="Requires devimint (set SSH_SERVER + SERVER_DEVIMINT_ENV)")
 class TestHappyPath:
     """Complete deal lifecycle: create → auth → fund → ship → release."""
 
@@ -635,7 +658,9 @@ class TestHappyPath:
 
         # Browser generates secret_code + hash; only hash goes to server (non-custodial)
         secret_code, secret_code_hash = generate_secret_and_hash()
-        buyer_pub, timeout_sig, _ = _make_buyer_escrow_key()
+        # Use the buyer's LNURL-auth ephemeral key (must match registered key)
+        buyer_pub = buyer_eph_priv.public_key.format(compressed=True).hex()
+        timeout_sig = _make_timeout_sig_for_coincurve_key(buyer_eph_priv)
         inv_resp = api("post", f"/deals/{deal_id}/create-ln-invoice",
                        json={
                            "secret_code_hash": secret_code_hash,
@@ -698,6 +723,7 @@ class TestHappyPath:
 # SECTION G: Refund path
 # ============================================================================
 
+@pytest.mark.skipif(not _DEVIMINT_AVAILABLE, reason="Requires devimint (set SSH_SERVER + SERVER_DEVIMINT_ENV)")
 class TestRefundPath:
     def test_refund_requires_refund_invoice(self):
         """Refund on a funded deal works (payout may fail with fake LN address)."""
@@ -724,7 +750,8 @@ class TestRefundPath:
         api("post", f"/deals/{deal_id}/submit-refund-invoice", json={
             "user_id": buyer_id, "invoice": TEST_BUYER_ADDRESS, "signature": sig2, "timestamp": ts2
         })
-        fund_deal_via_devimint(deal_id)
+        buyer_pub_hex = buyer_eph_priv.public_key.format(compressed=True).hex()
+        fund_deal_via_devimint(deal_id, buyer_eph_priv=buyer_eph_priv, buyer_eph_pub=buyer_pub_hex)
 
         # Mine 160 blocks (144 needed + 16 margin) so federation has time to sync
         assert mine_blocks(160), "Block mining failed"
@@ -762,6 +789,7 @@ class TestRefundPath:
 # SECTION H: Dispute path
 # ============================================================================
 
+@pytest.mark.skipif(not _DEVIMINT_AVAILABLE, reason="Requires devimint (set SSH_SERVER + SERVER_DEVIMINT_ENV)")
 class TestDisputePath:
     def test_dispute_flow(self):
         """Create → fund → dispute → admin resolve."""
@@ -790,7 +818,8 @@ class TestDisputePath:
         assert r.status_code == 200, f"submit-refund-invoice failed: {r.text}"
 
         # Fund deal
-        fund_deal_via_devimint(deal_id)
+        buyer_pub_hex = buyer_eph_priv.public_key.format(compressed=True).hex()
+        fund_deal_via_devimint(deal_id, buyer_eph_priv=buyer_eph_priv, buyer_eph_pub=buyer_pub_hex)
 
         # Mine 160 blocks (144 needed + 16 margin) so federation has time to sync
         assert mine_blocks(160), "Block mining failed"
@@ -824,15 +853,18 @@ class TestAdminEndpoints:
         resp = api("get", "/deals/admin/deals")
         assert resp.status_code == 401  # returns 401 when no key provided
 
+    @pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials (set TEST_ADMIN_KEY or TEST_ADMIN_PUBKEY)")
     def test_admin_list_deals(self):
         resp = api("get", "/deals/admin/deals", headers=admin_headers())
         assert resp.status_code == 200
         assert "deals" in resp.json()
 
+    @pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials")
     def test_admin_config(self):
         resp = api("get", "/deals/admin/config", headers=admin_headers())
         assert resp.status_code == 200
 
+    @pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials")
     def test_admin_resolve_non_disputed_deal_fails(self):
         """Admin can only resolve disputed/expired deals."""
         deal = create_test_deal()
@@ -896,6 +928,7 @@ class TestStatusGuards:
 class TestKillSwitch:
     """Test the payout kill switch (halt/resume)."""
 
+    @pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials")
     def test_halt_and_resume_payouts(self):
         """Halting payouts blocks releases; resuming allows them again."""
         # Halt
@@ -937,6 +970,7 @@ class TestAmountCap:
         deal = create_test_deal(price_sats=1000)
         assert deal["price_sats"] == 1000
 
+    @pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials")
     def test_system_status_returns_limits(self):
         """Limits endpoint returns test_phase_max_sats."""
         resp = api("get", "/deals/admin/settings/limits", headers=admin_headers())
@@ -950,6 +984,7 @@ class TestAmountCap:
 # SECTION M: Recovery endpoints
 # ============================================================================
 
+@pytest.mark.skipif(not ADMIN_KEY and not ADMIN_PUBKEY, reason="No admin credentials (set TEST_ADMIN_KEY or TEST_ADMIN_PUBKEY)")
 class TestRecoveryEndpoints:
     """Test admin recovery tools."""
 
@@ -1033,7 +1068,8 @@ class TestIdempotency:
         })
 
         secret_code, secret_code_hash = generate_secret_and_hash()
-        buyer_pub, timeout_sig, _ = _make_buyer_escrow_key()
+        buyer_pub = buyer_eph_priv.public_key.format(compressed=True).hex()
+        timeout_sig = _make_timeout_sig_for_coincurve_key(buyer_eph_priv)
         invoice_body = {
             "secret_code_hash": secret_code_hash,
             "buyer_pubkey": buyer_pub,

@@ -116,6 +116,10 @@ def app_and_mocks():
     def get_deal(did):
         return deal_store.get(did)
 
+    def get_secret_code_hash(did):
+        deal = deal_store.get(did)
+        return deal.get('fedimint_secret_code_hash') if deal else None
+
     def update_deal(did, **kw):
         if did in deal_store:
             for k, v in kw.items():
@@ -149,6 +153,7 @@ def app_and_mocks():
         patch("backend.api.routes._shared.verify_action_signature", return_value=True),
         patch("backend.auth.sig_verify.verify_action_signature", return_value=True),
         patch("backend.database.deal_storage.get_deal_by_id", side_effect=get_deal),
+        patch("backend.database.deal_storage.get_secret_code_hash", side_effect=get_secret_code_hash),
         patch("backend.database.deal_storage.update_deal", side_effect=update_deal),
         patch("backend.database.deal_storage.atomic_status_transition", side_effect=atomic_status_transition),
         patch("backend.database.deal_storage.find_expired_deals", return_value=[]),
@@ -524,7 +529,8 @@ class TestFailedPayoutRevert:
             "secret_code": SECRET_CODE,
         })
 
-        assert resp.status_code == 502
+        # Release runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200
         deal = m["deal_store"][DEAL_ID]
         assert deal["status"] == "funded", f"Expected 'funded', got '{deal['status']}'"
         assert deal["payout_status"] == "failed"
@@ -544,7 +550,8 @@ class TestFailedPayoutRevert:
             "timestamp": NOW_TS,
         })
 
-        assert resp.status_code == 502
+        # Refund runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200
         deal = m["deal_store"][DEAL_ID]
         assert deal["status"] == "funded", f"Expected 'funded', got '{deal['status']}'"
         assert deal["buyer_payout_status"] == "failed"
@@ -564,7 +571,8 @@ class TestFailedPayoutRevert:
             "secret_code": SECRET_CODE,
         })
 
-        assert resp.status_code == 502
+        # Release runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200
         deal = m["deal_store"][DEAL_ID]
         assert deal["status"] == "shipped", f"Expected 'shipped', got '{deal['status']}'"
 
@@ -1032,7 +1040,8 @@ class TestPostClaimConsistency:
             "secret_code": SECRET_CODE,
         })
 
-        assert resp.status_code == 502
+        # Release runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200
         deal = m["deal_store"][DEAL_ID]
         assert deal["release_txid"] is None
         assert deal["completed_at"] is None

@@ -207,6 +207,14 @@ class EscrowHttpClient:
                                        "attestations": attestations,
                                    }, timeout=_QUICK_TIMEOUT)
 
+    async def resolve_oracle_and_pay(self, escrow_id: str, attestations: list[dict], bolt11: str) -> dict:
+        return await self._request("POST", "/escrow/resolve-oracle-and-pay",
+                                   json={
+                                       "escrow_id": escrow_id,
+                                       "attestations": attestations,
+                                       "bolt11": bolt11,
+                                   }, timeout=_LONG_TIMEOUT)
+
     # ── Legacy (custodial) operations ───────────────────────────────
 
     async def claim_and_pay(self, escrow_id: str, secret_code: str, bolt11: str) -> dict:
@@ -224,9 +232,3 @@ class EscrowHttpClient:
                                        "bolt11": bolt11,
                                    }, timeout=_LONG_TIMEOUT)
 
-    # ── LN payment ──────────────────────────────────────────────────
-
-    async def ln_pay(self, bolt11: str) -> dict:
-        return await self._request("POST", "/ln/pay",
-                                   json={"bolt11": bolt11},
-                                   timeout=_LONG_TIMEOUT)

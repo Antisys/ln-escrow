@@ -609,25 +609,24 @@ class EscrowClient:
             escrow_id, disputer_pubkey, signature_hex,
         )
 
-    async def ln_pay(self, bolt11: str) -> dict:
+    async def resolve_oracle_and_pay(
+        self,
+        escrow_id: str,
+        attestations: list[SignedAttestation],
+        bolt11: str,
+    ) -> dict:
         """
-        Pay a BOLT11 invoice from the service's e-cash wallet via Lightning.
+        Resolve a disputed escrow via oracle attestations, then pay via Lightning.
 
-        Used after resolve_via_oracle() — the escrow e-cash is already in the wallet,
-        so we just need a plain LN payment (not claim-and-pay).
-
-        Uses: fedimint-cli module ln pay <bolt11>
-        The LN module selects a gateway, pays, and awaits completion.
-
-        Returns dict with payment outcome (success/failure + preimage).
-        Raises EscrowClientError on failure.
+        Two-step CLI flow (no standalone ln-pay exposed):
+          1. resolve-oracle → e-cash lands in service wallet
+          2. ln pay → pays the winner's BOLT11 invoice
         """
+        await self.resolve_via_oracle(escrow_id, attestations)
         data = await self._run(
             "module", "ln", "pay", bolt11,
             timeout_secs=90,
         )
-        # The LN module returns the outcome directly (Success or Failure variant)
-        # Check for failure explicitly
         if isinstance(data, dict) and data.get("Failure"):
             raise EscrowClientError(
                 f"LN payment failed: {data['Failure']}",

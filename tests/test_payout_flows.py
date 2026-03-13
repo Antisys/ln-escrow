@@ -129,6 +129,10 @@ def app_and_mocks():
     def get_deal(did):
         return deal_store.get(did)
 
+    def get_secret_code_hash(did):
+        deal = deal_store.get(did)
+        return deal.get('fedimint_secret_code_hash') if deal else None
+
     def update_deal(did, **kw):
         if did in deal_store:
             for k, v in kw.items():
@@ -172,6 +176,7 @@ def app_and_mocks():
 
         # Deal storage
         patch("backend.database.deal_storage.get_deal_by_id", side_effect=get_deal),
+        patch("backend.database.deal_storage.get_secret_code_hash", side_effect=get_secret_code_hash),
         patch("backend.database.deal_storage.update_deal", side_effect=update_deal),
         patch("backend.database.deal_storage.atomic_status_transition", side_effect=atomic_status_transition),
         patch("backend.database.deal_storage.find_expired_deals", return_value=[]),
@@ -315,8 +320,8 @@ class TestNormalRelease:
         assert resp.status_code == 200, resp.text
         m["fedimint_mock"].release_deal_escrow.assert_not_called()
 
-    def test_release_ln_failure_returns_502(self, app_and_mocks):
-        """#4: claim-and-pay fails → 502, deal has payout_status=failed, no txid stored."""
+    def test_release_ln_failure_reverts_state(self, app_and_mocks):
+        """#4: claim-and-pay fails → 200 (background task), deal has payout_status=failed, no txid stored."""
         m = app_and_mocks
         m["fedimint_mock"].release_deal_escrow.side_effect = Exception("no route")
         m["fedimint_mock"].client.claim_escrow.side_effect = Exception("no route")
@@ -332,14 +337,15 @@ class TestNormalRelease:
             "secret_code": SECRET_CODE,
         })
 
-        assert resp.status_code == 502, resp.text
+        # Release now runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200, resp.text
         deal = m["deal_store"][DEAL_ID]
         assert deal["payout_status"] == "failed"
         # Claim+pay are atomic — no txid stored on failure
         assert deal.get("release_txid") is None
 
     def test_release_fedimint_claim_failure_reverts(self, app_and_mocks):
-        """#5: Fedimint claim-and-pay fails → 502, status reverts to funded."""
+        """#5: Fedimint claim-and-pay fails → background task reverts status to funded."""
         m = app_and_mocks
         m["fedimint_mock"].release_deal_escrow.side_effect = Exception("claim failed")
         m["fedimint_mock"].client.claim_escrow.side_effect = Exception("claim failed")
@@ -355,7 +361,8 @@ class TestNormalRelease:
             "secret_code": SECRET_CODE,
         })
 
-        assert resp.status_code == 502, resp.text
+        # Release now runs in background task — endpoint returns 200 immediately
+        assert resp.status_code == 200, resp.text
         assert m["deal_store"][DEAL_ID]["status"] == "funded"
 
 
@@ -429,22 +436,25 @@ class TestRefund:
 class TestAdminRelease:
     """Admin resolves deal in seller's favour (non-custodial: no secret_code access)."""
 
-    def test_admin_release_disputed_awaiting_oracle(self, app_and_mocks):
-        """#9: Disputed deal with escrow still disputed → 409 (waiting for oracle attestations)."""
+    def test_admin_release_disputed_signs_oracle(self, app_and_mocks):
+        """#9: Admin resolves disputed deal by signing oracle attestations server-side."""
         m = app_and_mocks
         m["deal_store"][DEAL_ID] = _make_deal(
             status="disputed",
             seller_payout_invoice="user@wallet.com",
         )
 
-        resp = m["client"].post(
-            f"/deals/admin/{DEAL_ID}/resolve-release",
-            json={"resolution_note": "Seller wins"},
-            headers=ADMIN_HEADERS,
-        )
+        fake_attestations = [{"pubkey": "02aa", "signature": "sig", "content": {"escrow_id": ESCROW_ID, "outcome": "Seller"}}]
+        with patch("backend.api.routes.admin._sign_oracle_attestations", return_value=fake_attestations):
+            resp = m["client"].post(
+                f"/deals/admin/{DEAL_ID}/resolve-release",
+                json={"resolution_note": "Seller wins"},
+                headers=ADMIN_HEADERS,
+            )
 
-        assert resp.status_code == 409, resp.text
-        assert "oracle" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["resolution"] == "released"
+        assert m["deal_store"][DEAL_ID]["status"] == "completed"
 
     def test_admin_release_no_invoice(self, app_and_mocks):
         """#10: No seller invoice → HTTP 400."""
@@ -471,22 +481,25 @@ class TestAdminRelease:
 class TestAdminRefund:
     """Admin resolves deal in buyer's favour (non-custodial)."""
 
-    def test_admin_refund_disputed_awaiting_oracle(self, app_and_mocks):
-        """#12: Disputed deal with escrow still disputed → 409 (waiting for oracle attestations)."""
+    def test_admin_refund_disputed_signs_oracle(self, app_and_mocks):
+        """#12: Admin resolves disputed deal in buyer's favour by signing oracle attestations."""
         m = app_and_mocks
         m["deal_store"][DEAL_ID] = _make_deal(
             status="disputed",
             buyer_payout_invoice="buyer@wallet.com",
         )
 
-        resp = m["client"].post(
-            f"/deals/admin/{DEAL_ID}/resolve-refund",
-            json={"resolution_note": "Buyer wins"},
-            headers=ADMIN_HEADERS,
-        )
+        fake_attestations = [{"pubkey": "02aa", "signature": "sig", "content": {"escrow_id": ESCROW_ID, "outcome": "Buyer"}}]
+        with patch("backend.api.routes.admin._sign_oracle_attestations", return_value=fake_attestations):
+            resp = m["client"].post(
+                f"/deals/admin/{DEAL_ID}/resolve-refund",
+                json={"resolution_note": "Buyer wins"},
+                headers=ADMIN_HEADERS,
+            )
 
-        assert resp.status_code == 409, resp.text
-        assert "oracle" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["resolution"] == "refunded"
+        assert m["deal_store"][DEAL_ID]["status"] == "refunded"
 
     def test_admin_refund_no_invoice(self, app_and_mocks):
         """#13: No buyer invoice → HTTP 400."""
