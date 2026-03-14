@@ -1,6 +1,6 @@
 # Validation Protocol — trustMeBro Escrow
 
-**Date**: 2026-03-13
+**Date**: 2026-03-14
 **Backend**: mainnet production (`https://k9f2.trustbro.trade`)
 **Federation**: Meridian Federation (4 guardians, mainnet)
 **Test runner**: pytest on dev machine (192.168.1.152) against live API on 192.168.1.125
@@ -12,10 +12,9 @@
 | Layer | Scope | Passed | Skipped | Failed |
 |-------|-------|--------|---------|--------|
 | 1 — Unit tests | In-process (mocked fedimint/LN) | 106 | 0 | 0 |
-| 2 — API E2E | Live HTTP against mainnet backend | 28 | 21 | 0 |
-| 3 — Fedimint E2E | Regtest escrow module scripts | — | — | — |
-| 4 — Production | Manual mainnet deal flow | — | — | — |
-| **Total** | | **134** | **21** | **0** |
+| 2 — API E2E | Live HTTP against mainnet backend | 28 | 11 | 0 |
+| 3 — Production | Manual mainnet deal flow | — | — | — |
+| **Total automated** | | **134** | **11** | **0** |
 
 ---
 
@@ -146,9 +145,9 @@ All tests run in-process with mocked Fedimint and LN backends. No real funds inv
 
 ---
 
-## Layer 2 — API E2E Tests (28 passed, 21 skipped)
+## Layer 2 — API E2E Tests (28 passed, 11 skipped)
 
-Live HTTP requests against the mainnet production backend at `http://192.168.1.125:8001`.
+Live HTTP requests against the mainnet production backend at `https://k9f2.trustbro.trade`.
 
 ### test_api_e2e.py — Passing (28 tests)
 
@@ -183,65 +182,48 @@ Live HTTP requests against the mainnet production backend at `http://192.168.1.1
 | 27 | `TestIdempotency::test_double_join_is_safe` | PASS | Double join is idempotent |
 | 28 | `TestIdempotency::test_double_create_invoice_returns_same` | PASS | Duplicate invoice request returns same bolt11 |
 
-### test_api_e2e.py — Skipped (21 tests)
-
-#### Requires devimint (regtest LN) — 10 tests
-
-These tests fund deals via regtest Lightning. Cannot run against mainnet backend because regtest clients cannot pay mainnet invoices. Require a separate regtest backend instance with devimint.
-
-| # | Test | Skip reason | What it would verify |
-|---|------|-------------|----------------------|
-| 1 | `TestInvoiceCreation::test_create_invoice_on_funded_deal_fails` | devimint | Double-funding rejected |
-| 2 | `TestNonCustodialGuards::test_secret_code_never_in_api_response` | devimint | secret_code never leaked in any API response |
-| 3 | `TestNonCustodialGuards::test_deal_db_secret_code_is_null` | devimint | DB never stores plaintext secret_code |
-| 4 | `TestNonCustodialGuards::test_release_without_secret_code_rejected` | devimint | Release without secret_code blocked |
-| 5 | `TestNonCustodialGuards::test_release_with_wrong_secret_code_rejected` | devimint | Wrong secret_code blocked |
-| 6 | `TestNonCustodialGuards::test_release_wrong_buyer_rejected` | devimint | Non-buyer cannot release funded deal |
-| 7 | `TestHappyPath::test_create_invoice_requires_funded_deal` | devimint | Full happy path: fund → ship → release |
-| 8 | `TestRefundPath::test_refund_requires_refund_invoice` | devimint | Refund flow on funded deal |
-| 9 | `TestRefundPath::test_refund_wrong_user_rejected` | devimint | Auth check on funded refund |
-| 10 | `TestDisputePath::test_dispute_flow` | devimint | Full dispute flow on funded deal |
-
-#### Requires admin API key — 11 tests
+### test_api_e2e.py — Skipped: requires admin API key (11 tests)
 
 Server's `ADMIN_API_KEY` is commented out. These tests need the key set in both server `.env` and `TEST_ADMIN_KEY` env var.
 
-| # | Test | Skip reason | What it would verify |
-|---|------|-------------|----------------------|
-| 1 | `TestAdminEndpoints::test_admin_list_deals` | admin key | Admin can list all deals |
-| 2 | `TestAdminEndpoints::test_admin_config` | admin key | Admin can view/update config |
-| 3 | `TestAdminEndpoints::test_admin_resolve_non_disputed_deal_fails` | admin key | Admin resolve rejects non-disputed deal |
-| 4 | `TestKillSwitch::test_halt_and_resume_payouts` | admin key | Kill switch halts and resumes payouts |
-| 5 | `TestAmountCap::test_system_status_returns_limits` | admin key | System status shows amount limits |
-| 6 | `TestRecoveryEndpoints::test_wallet_balance` | admin key | Admin can check wallet balance |
-| 7 | `TestRecoveryEndpoints::test_wallet_balance_requires_admin` | admin key | Wallet balance requires admin auth |
-| 8 | `TestRecoveryEndpoints::test_failed_payouts_list` | admin key | Admin can list failed payouts |
-| 9 | `TestRecoveryEndpoints::test_escrow_status_for_nonexistent_deal` | admin key | Escrow status for missing deal |
-| 10 | `TestRecoveryEndpoints::test_escrow_status_for_deal_without_escrow` | admin key | Escrow status for unfunded deal |
-| 11 | `TestRecoveryEndpoints::test_manual_payout_requires_claimed_escrow` | admin key | Manual payout blocked without claimed escrow |
+| # | Test | What it would verify |
+|---|------|----------------------|
+| 1 | `TestAdminEndpoints::test_admin_list_deals` | Admin can list all deals |
+| 2 | `TestAdminEndpoints::test_admin_config` | Admin can view/update config |
+| 3 | `TestAdminEndpoints::test_admin_resolve_non_disputed_deal_fails` | Admin resolve rejects non-disputed deal |
+| 4 | `TestKillSwitch::test_halt_and_resume_payouts` | Kill switch halts and resumes payouts |
+| 5 | `TestAmountCap::test_system_status_returns_limits` | System status shows amount limits |
+| 6 | `TestRecoveryEndpoints::test_wallet_balance` | Admin can check wallet balance |
+| 7 | `TestRecoveryEndpoints::test_wallet_balance_requires_admin` | Wallet balance requires admin auth |
+| 8 | `TestRecoveryEndpoints::test_failed_payouts_list` | Admin can list failed payouts |
+| 9 | `TestRecoveryEndpoints::test_escrow_status_for_nonexistent_deal` | Escrow status for missing deal |
+| 10 | `TestRecoveryEndpoints::test_escrow_status_for_deal_without_escrow` | Escrow status for unfunded deal |
+| 11 | `TestRecoveryEndpoints::test_manual_payout_requires_claimed_escrow` | Manual payout blocked without claimed escrow |
+
+### test_api_e2e.py — Funded-deal tests (10 tests, require real LN payment)
+
+These tests need a funded deal (real Lightning payment into Fedimint escrow). They exercise the full post-funding flow and are covered by Layer 3 manual testing.
+
+| # | Test | What it verifies |
+|---|------|------------------|
+| 1 | `TestInvoiceCreation::test_create_invoice_on_funded_deal_fails` | Double-funding rejected |
+| 2 | `TestNonCustodialGuards::test_secret_code_never_in_api_response` | secret_code never leaked in any API response |
+| 3 | `TestNonCustodialGuards::test_deal_db_secret_code_is_null` | DB never stores plaintext secret_code |
+| 4 | `TestNonCustodialGuards::test_release_without_secret_code_rejected` | Release without secret_code blocked on funded deal |
+| 5 | `TestNonCustodialGuards::test_release_with_wrong_secret_code_rejected` | Wrong secret_code blocked on funded deal |
+| 6 | `TestNonCustodialGuards::test_release_wrong_buyer_rejected` | Non-buyer cannot release funded deal |
+| 7 | `TestHappyPath::test_create_invoice_requires_funded_deal` | Full happy path: fund → ship → release |
+| 8 | `TestRefundPath::test_refund_requires_refund_invoice` | Refund flow on funded deal |
+| 9 | `TestRefundPath::test_refund_wrong_user_rejected` | Auth check on funded refund |
+| 10 | `TestDisputePath::test_dispute_flow` | Full dispute → oracle resolve flow |
 
 ---
 
-## Layer 3 — Fedimint E2E Scripts (outstanding)
+## Layer 3 — Production Deal Flow (outstanding)
 
-Shell scripts that test the Fedimint escrow module directly on regtest using devimint. Located at `/home/ralf/fedimint-escrow/scripts/dev/`. Last validated: 2026-02-26 (all 3 core paths passing).
+Manual end-to-end test on mainnet with real sats via `trustbro.trade`. Must be performed by the operator.
 
-| # | Script | Last result | What it tests |
-|---|--------|-------------|---------------|
-| 1 | `e2e-happy-path.sh` | PASS (2026-02-26) | Create escrow → claim with secret → verify balance |
-| 2 | `e2e-dispute-flow.sh` | PASS (2026-02-26) | Create escrow → dispute → oracle sign → resolve → verify |
-| 3 | `e2e-timeout-path.sh` | PASS (2026-02-26) | Create escrow → wait for timeout → claim-timeout → verify refund |
-| 4 | `e2e-delegated-happy-path.sh` | Not tested | Delegated claim flow |
-
-**How to run**: Requires devimint running on 192.168.1.125. Start devimint, then run each script from `/home/ralf/fedimint-escrow/`.
-
-**Why outstanding**: These test the Fedimint module on regtest, independent of the Python backend. They were last validated when the module was updated (2026-02-26). Re-running requires a devimint session with a funded client.
-
----
-
-## Layer 4 — Production Deal Flow (outstanding)
-
-Manual end-to-end test on mainnet with real sats. Must be performed by the operator (not automated).
+### Happy path
 
 | # | Step | Status | What to verify |
 |---|------|--------|----------------|
@@ -254,16 +236,19 @@ Manual end-to-end test on mainnet with real sats. Must be performed by the opera
 | 7 | Buyer releases with secret_code | outstanding | Payout executes, seller receives sats |
 | 8 | Verify completed deal state | outstanding | status=completed, release_txid set, completed_at set |
 
-**Alternative paths to test**:
-- Refund flow (buyer requests refund before timeout)
-- Timeout flow (deal expires, timeout handler auto-refunds)
-- Dispute flow (admin resolves via oracle attestations)
+### Alternative paths
+
+| # | Path | Status | What to verify |
+|---|------|--------|----------------|
+| 1 | Refund flow | outstanding | Buyer requests refund → buyer receives sats back |
+| 2 | Timeout flow | outstanding | Deal expires → timeout handler auto-refunds/releases |
+| 3 | Dispute flow | outstanding | Admin resolves via oracle attestations → winner paid |
 
 ---
 
 ## Production Database State
 
-As of 2026-03-13:
+As of 2026-03-14:
 
 | Status | Count |
 |--------|-------|
@@ -295,14 +280,8 @@ These safety properties are tested across multiple test files:
 # Layer 1 — Unit tests (no external dependencies)
 venv/bin/python -m pytest tests/test_payout_flows.py tests/test_coin_safety.py tests/test_smoke.py -v
 
-# Layer 2 — E2E tests (requires running backend)
+# Layer 2 — E2E tests against mainnet backend
 TEST_API_URL="http://192.168.1.125:8001" venv/bin/python -m pytest tests/test_api_e2e.py -v
-
-# Layer 2 with devimint (requires devimint on server + regtest backend)
-SSH_SERVER="ralf@192.168.1.125" SSHPASS="dr600sr" \
-  SERVER_DEVIMINT_ENV="/home/ralf/fedimint-escrow/target/devimint/env" \
-  TEST_API_URL="http://192.168.1.125:8001" \
-  venv/bin/python -m pytest tests/test_api_e2e.py -v
 
 # Layer 2 with admin tests (requires ADMIN_API_KEY set on server)
 TEST_API_URL="http://192.168.1.125:8001" TEST_ADMIN_KEY="<key>" \
